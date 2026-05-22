@@ -139,6 +139,21 @@ def reconcile_jarmod_classpath(gameInfo, jarMods, modRoots):
             changed = True
             ui.log.log("    Restored enabled JAR classPath entry: {}".format(entry))
 
+    # Reconcile vmArgs — ensure the javaagent and required JVM flags are present
+    # whenever JAR mods are active. classPath reconciliation above handles JARs on
+    # the classpath; this block handles the flags the JVM needs to *load* them.
+    vmArgs = jsonObj.setdefault("vmArgs", [])
+    if isinstance(vmArgs, list) and activeJarMods:
+        required_vmargs = [
+            ASPECTJ_JAVAAGENT,
+            "--add-opens java.base/java.lang=ALL-UNNAMED",
+        ]
+        for arg in required_vmargs:
+            if arg not in vmArgs:
+                vmArgs.insert(0, arg)
+                changed = True
+                ui.log.log("    Restored required vmArg: {}".format(arg))
+
     if not changed:
         ui.log.log("JAR classPath cleanup: no stale entries found.")
         return False

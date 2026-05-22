@@ -15,6 +15,8 @@ from ui.database import (
     resolve_config_path,
 )
 
+REQUIRED_VMARGS = [ASPECTJ_JAVAAGENT, "--add-opens java.base/java.lang=ALL-UNNAMED"]
+
 
 TEST_MOD_NAME = "TestJarMod"
 TEST_MOD_JAR = "{}.jar".format(TEST_MOD_NAME)
@@ -235,6 +237,75 @@ class JarModPathTests(unittest.TestCase):
         self.assertNotIn(staleLocalJar, config["classPath"])
         self.assertNotIn(staleWorkshopJar, config["classPath"])
         self.assertEqual(config["classPath"].count("aspectjweaver-1.9.19.jar"), 1)
+
+    def test_reconcile_restores_missing_javaagent_vmarg(self):
+        """reconcile_jarmod_classpath must restore the javaagent vmArg when it is
+        absent from config.json but JAR mods are active.  This covers the case
+        where a game update or manual edit strips vmArgs — XML mod content still
+        loads (it lives in spacehaven.jar) but AspectJ advice silently stops
+        running without the javaagent, so reconcile must catch and fix this."""
+        modsRoot = os.path.join(self.gameDir, "mods")
+        modPath = os.path.join(modsRoot, TEST_MOD_NAME)
+        infoPath = write_mod_files(modPath)
+        mod = JarMod(infoPath, self.gameInfo, TEST_MOD_JAR)
+
+        # Write config.json with an active JAR on the classPath but NO javaagent
+        # in vmArgs — simulating a reset or manually-edited config.
+        with open(self.configPath, "w", encoding="utf-8") as configFile:
+            json.dump(
+                {
+                    "classPath": [ASPECTJ_WEAVER_JAR, ASPECTJ_JAR, mod.classPathName, "spacehaven.jar"],
+                    "vmArgs": ["-Xmx4G"],
+                },
+                configFile,
+            )
+
+        changed = reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
+        config = load_config(self.configPath)
+
+        self.assertTrue(changed)
+        for arg in REQUIRED_VMARGS:
+            self.assertIn(arg, config["vmArgs"], "Expected vmArg to be restored: {}".format(arg))
+        # Pre-existing vmArgs must be preserved
+        self.assertIn("-Xmx4G", config["vmArgs"])
+
+    def test_reconcile_does_not_add_vmargs_when_no_active_jar_mods(self):
+        """reconcile_jarmod_classpath must NOT inject javaagent vmArgs when there
+        are no active JAR mods — it should leave vmArgs untouched."""
+        modsRoot = os.path.join(self.gameDir, "mods")
+        modPath = os.path.join(modsRoot, TEST_MOD_NAME)
+        infoPath = write_mod_files(modPath)
+        mod = JarMod(infoPath, self.gameInfo, TEST_MOD_JAR)
+        mod.enabled = False  # disabled
+
+        with open(self.configPath, "w", encoding="utf-8") as configFile:
+            json.dump({"classPath": ["spacehaven.jar"], "vmArgs": ["-Xmx4G"]}, configFile)
+
+        reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
+        config = load_config(self.configPath)
+
+        self.assertNotIn(ASPECTJ_JAVAAGENT, config["vmArgs"])
+        self.assertIn("-Xmx4G", config["vmArgs"])
+
+    def test_reconcile_vmargs_is_idempotent(self):
+        """Running reconcile twice must not duplicate vmArg entries."""
+        modsRoot = os.path.join(self.gameDir, "mods")
+        modPath = os.path.join(modsRoot, TEST_MOD_NAME)
+        infoPath = write_mod_files(modPath)
+        mod = JarMod(infoPath, self.gameInfo, TEST_MOD_JAR)
+
+        with open(self.configPath, "w", encoding="utf-8") as configFile:
+            json.dump(
+                {"classPath": [ASPECTJ_WEAVER_JAR, ASPECTJ_JAR, mod.classPathName, "spacehaven.jar"], "vmArgs": []},
+                configFile,
+            )
+
+        reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
+        reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
+        config = load_config(self.configPath)
+
+        for arg in REQUIRED_VMARGS:
+            self.assertEqual(config["vmArgs"].count(arg), 1, "Duplicate vmArg after double reconcile: {}".format(arg))
 
 
 if __name__ == "__main__":
