@@ -14,7 +14,26 @@ import shutil
 ASPECTJ_VERSION = "1.9.19"
 ASPECTJ_JAR = "aspectj-{}.jar".format(ASPECTJ_VERSION)
 ASPECTJ_WEAVER_JAR = "aspectjweaver-{}.jar".format(ASPECTJ_VERSION)
+# Relative form kept for backward-compat and testing; prefer _make_javaagent_arg() for writing.
 ASPECTJ_JAVAAGENT = "-javaagent:./{}".format(ASPECTJ_WEAVER_JAR)
+
+
+def _make_javaagent_arg(game_dir):
+    """Return a -javaagent vmArg using an absolute path resolved from game_dir.
+
+    Using absolute paths avoids failures when the JVM working directory is not
+    Contents/Resources/ — which happens when the game is launched via macOS
+    ``open spacehaven.app -W`` from the modloader rather than directly from Steam.
+    """
+    return "-javaagent:{}".format(os.path.join(game_dir, ASPECTJ_WEAVER_JAR))
+
+
+def _has_javaagent_arg(vmArgs):
+    """Return True if vmArgs already contains *any* javaagent entry for aspectjweaver."""
+    return any(
+        isinstance(a, str) and a.startswith("-javaagent:") and ASPECTJ_WEAVER_JAR in a
+        for a in vmArgs
+    )
 
 
 def resolve_game_dir(gameInfo):
@@ -144,15 +163,23 @@ def reconcile_jarmod_classpath(gameInfo, jarMods, modRoots):
     # the classpath; this block handles the flags the JVM needs to *load* them.
     vmArgs = jsonObj.setdefault("vmArgs", [])
     if isinstance(vmArgs, list) and activeJarMods:
-        required_vmargs = [
-            ASPECTJ_JAVAAGENT,
-            "--add-opens java.base/java.lang=ALL-UNNAMED",
-        ]
-        for arg in required_vmargs:
-            if arg not in vmArgs:
-                vmArgs.insert(0, arg)
-                changed = True
-                ui.log.log("    Restored required vmArg: {}".format(arg))
+        abs_javaagent = _make_javaagent_arg(gameDir)
+        if abs_javaagent not in vmArgs:
+            # Remove any stale entry (relative ./... or wrong absolute path) before
+            # inserting the correct absolute form.  We intentionally upgrade old
+            # relative-path entries here — _has_javaagent_arg() would have returned
+            # True for those and silently left them in place.
+            stale = [a for a in vmArgs if isinstance(a, str) and a.startswith("-javaagent:") and ASPECTJ_WEAVER_JAR in a]
+            for s in stale:
+                vmArgs.remove(s)
+                ui.log.log("    Removed stale javaagent vmArg: {}".format(s))
+            vmArgs.insert(0, abs_javaagent)
+            changed = True
+            ui.log.log("    Restored/upgraded javaagent vmArg: {}".format(abs_javaagent))
+        if "--add-opens java.base/java.lang=ALL-UNNAMED" not in vmArgs:
+            vmArgs.insert(0, "--add-opens java.base/java.lang=ALL-UNNAMED")
+            changed = True
+            ui.log.log("    Restored required vmArg: --add-opens java.base/java.lang=ALL-UNNAMED")
 
     if not changed:
         ui.log.log("JAR classPath cleanup: no stale entries found.")
@@ -666,7 +693,10 @@ class JarMod(Mod):
             classPath[:] = _move_once_to_front(classPath, [ASPECTJ_WEAVER_JAR, ASPECTJ_JAR])
             _insert_before_spacehaven(classPath, self.classPathName)
 
-            _insert_once(vmArgs, ASPECTJ_JAVAAGENT, 0)
+            # Remove any stale javaagent entries (relative or absolute) then insert
+            # the absolute-path form so the JVM finds aspectjweaver regardless of CWD.
+            vmArgs[:] = [a for a in vmArgs if not (isinstance(a, str) and a.startswith("-javaagent:") and ASPECTJ_WEAVER_JAR in a)]
+            vmArgs.insert(0, _make_javaagent_arg(self.gameDir))
             _insert_once(vmArgs, "-XstartOnFirstThread", 0)
             _insert_once(vmArgs, "--add-opens java.base/java.lang=ALL-UNNAMED", 0)
 

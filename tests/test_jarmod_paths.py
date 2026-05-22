@@ -10,12 +10,11 @@ from ui.database import (
     ASPECTJ_WEAVER_JAR,
     DISABLED_MARKER,
     JarMod,
+    _make_javaagent_arg,
     normalize_classpath_entry,
     reconcile_jarmod_classpath,
     resolve_config_path,
 )
-
-REQUIRED_VMARGS = [ASPECTJ_JAVAAGENT, "--add-opens java.base/java.lang=ALL-UNNAMED"]
 
 
 TEST_MOD_NAME = "TestJarMod"
@@ -111,7 +110,8 @@ class JarModPathTests(unittest.TestCase):
         expectedJarPath = normalize_classpath_entry(os.path.join(modPath, TEST_MOD_JAR))
         for entry in [ASPECTJ_WEAVER_JAR, ASPECTJ_JAR, expectedJarPath]:
             self.assertEqual(config["classPath"].count(entry), 1)
-        self.assertEqual(config["vmArgs"].count(ASPECTJ_JAVAAGENT), 1)
+        expected_javaagent = _make_javaagent_arg(self.gameDir)
+        self.assertEqual(config["vmArgs"].count(expected_javaagent), 1)
 
     def test_enable_keeps_existing_jar_order_before_spacehaven(self):
         modPath = os.path.join(self.gameDir, "mods", TEST_MOD_NAME)
@@ -263,8 +263,9 @@ class JarModPathTests(unittest.TestCase):
         changed = reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
         config = load_config(self.configPath)
 
+        expected_javaagent = _make_javaagent_arg(self.gameDir)
         self.assertTrue(changed)
-        for arg in REQUIRED_VMARGS:
+        for arg in [expected_javaagent, "--add-opens java.base/java.lang=ALL-UNNAMED"]:
             self.assertIn(arg, config["vmArgs"], "Expected vmArg to be restored: {}".format(arg))
         # Pre-existing vmArgs must be preserved
         self.assertIn("-Xmx4G", config["vmArgs"])
@@ -284,7 +285,8 @@ class JarModPathTests(unittest.TestCase):
         reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
         config = load_config(self.configPath)
 
-        self.assertNotIn(ASPECTJ_JAVAAGENT, config["vmArgs"])
+        expected_javaagent = _make_javaagent_arg(self.gameDir)
+        self.assertNotIn(expected_javaagent, config["vmArgs"])
         self.assertIn("-Xmx4G", config["vmArgs"])
 
     def test_reconcile_vmargs_is_idempotent(self):
@@ -304,7 +306,8 @@ class JarModPathTests(unittest.TestCase):
         reconcile_jarmod_classpath(self.gameInfo, [mod], [modsRoot])
         config = load_config(self.configPath)
 
-        for arg in REQUIRED_VMARGS:
+        expected_javaagent = _make_javaagent_arg(self.gameDir)
+        for arg in [expected_javaagent, "--add-opens java.base/java.lang=ALL-UNNAMED"]:
             self.assertEqual(config["vmArgs"].count(arg), 1, "Duplicate vmArg after double reconcile: {}".format(arg))
 
 
